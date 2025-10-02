@@ -17,8 +17,8 @@ N = 7920; %rpm
 
 %constraints and requirements
 M2 = 1;
-a3min = -20; %deg
-a3max = 20; %deg
+a3min = -45; %deg
+a3max = 45; %deg
 zweif = 0.8;
 Remin = 1e5;
 Remax = 5e5;
@@ -210,7 +210,6 @@ end
 
 function [bladeARr, Prtot, To2, To3, rho3, Nr, M2rel, zetar] = rotor_blade_aspect_ratio(U, sigmar, sigmarz, rm, Reor, mu, R, Cp, To1, Po1, Po2, gamma, M2, c2, w2, w3, h2, c3, psi, b2, b3)
     iterations = 2000; % iterations for both loops
-    Tref = 1600; %K
     To2 = To1;
     T2 = To2 - (c2^2)/(2*Cp);
     To3 = To2 + (psi * U^2)/Cp;
@@ -229,7 +228,7 @@ function [bladeARr, Prtot, To2, To3, rho3, Nr, M2rel, zetar] = rotor_blade_aspec
         T3 = To3 * (1 + ((gamma-1)/2)*(M3^2))^-1;
         P3 = PoIterable(i) * (1 + ((gamma-1)/2)*(M3rel^2))^(-gamma/(gamma-1));
         rho3 = P3/(R*T3);
-        mur = mu * (T3/Tref)^0.7;
+        mur = mu;
         nur = mur/rho3;
         
         or = Reor * nur / w3;
@@ -261,7 +260,6 @@ end
  
 function [bladeARn, Po2, Nn, zetan] = nozzle_blade_aspect_ratio(rm, Reon, mu, R, Cp, To1, Po1, gamma, M2, sigman, sigmanz, a1, a2, ctheta2, cz, h1)
     iterations = 2000; % iterations for both loops
-    Tref = 1600; %K
     %blade aspect ratio - nozzle
     PoIterable = Po1;
     for i = 1:iterations
@@ -269,7 +267,7 @@ function [bladeARn, Po2, Nn, zetan] = nozzle_blade_aspect_ratio(rm, Reon, mu, R,
         P2 = PoIterable(i) * (1 + ((gamma-1)/2)*(M2^2))^(-gamma/(gamma-1));
         rho2 = P2/(R*T2);
         
-        mun = mu * (T2/Tref)^0.7;
+        mun = mu;
         nun = mun/rho2;
         
         c2 = sqrt(ctheta2^2 + cz^2);
