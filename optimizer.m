@@ -23,7 +23,7 @@ zweif = 0.8;
 Remin = 1e5;
 Remax = 5e5;
 Umax = 423; %m/s - specifically at blade tip
-Wout = 20.6e6; %W
+Wout = 20.6e6 * Wproportion; %W
 
 %lower and upper bounds
 lb = [a3min Remin Remin];
@@ -36,22 +36,57 @@ Reorguess = 1.13e5; %reynolds number at rotor "throat"
 x0 = [a3guess Reonguess Reorguess];
 
 %perform optimization
-objectiveFunction = @(x) optimizeStage(x, R, To1, Po1, M2, cz, a1, Cp, gamma, Umax, N, mdot, zweif, mu, etaTR);
-nonlcon = @(x) constraints(x, cz, a1, To1, M2, Cp, gamma, mdot, Umax, N, R, Po1, etaTR, Wout, Wproportion);
+objectiveFunction = @(x) optimizeStage(x, R, To1, Po1, M2, cz, a1, Cp, gamma, Umax, N, mdot, zweif, mu, etaTR, Wout);
+nonlcon = @(x) constraints(x, R, To1, Po1, M2, cz, a1, Cp, gamma, Umax, N, mdot, zweif, mu, etaTR, Wout);
 [out, etaST, ~, ~, ~, ~, ~] = fmincon(objectiveFunction, x0, [], [], [], [], lb, ub, nonlcon);
-etaST = -etaST %flip to positive since we're done tricking fmincon
-out(1) %a3
+etaST = -etaST; %flip to positive since we're done tricking fmincon
+
+%postprocess and output the necessary data for the homework
+postProcess(out, R, To1, Po1, M2, cz, a1, Cp, gamma, Umax, N, mdot, zweif, mu, etaTR, Wout);
 
 %stage efficiency optimization function
-function etaST = optimizeStage(x, R, To1, Po1, M2, cz, a1, Cp, gamma, Umax, N, mdot, zweif, mu, etaTR)
+function etaST = optimizeStage(x, R, To1, Po1, M2, cz, a1, Cp, gamma, Umax, N, mdot, zweif, mu, etaTR, Wout)
     %unpack design variables
     [a3, Reon, Reor] = unpack(x);
 
-    %calculate nozzle radii and U
-    [rtn, rhn, rm, U] = nozzleRadiiAndU(Umax, N, gamma, R, Po1, cz, a1, To1, Cp, mdot);
+    %perform velocity triangle analysis with chosen parameters
+    [c1, ctheta1, c2, ctheta2, a2, w2, wtheta2, b2, w3, wtheta3, b3, c3, ctheta3, M1] = velocityTriangleAnalysis(Wout, N, R, cz, a1, a3, Po1, To1, M2, Cp, gamma, mdot, etaTR);
+
+    %calculate nozzle radii and pitchline U
+    [rtn, rhn, rm, U, rho1] = nozzleRadiiAndU(Wout, N, gamma, R, Po1, cz, a1, To1, Cp, mdot, ctheta2, ctheta3, etaTR);
+    
+    %calculate psi, phi, Rdeg
+    [psi, phi, Rdeg] = psiPhiR(cz, U, ctheta3, ctheta2, b2, b3);
+
+    %calculate optimum solidities using zweifel criteria
+    [sigmanz, sigmarz, sigman, sigmar] = sigmaZweif(w3, To1, U, Cp, R, cz, ctheta1, ctheta2, wtheta2, wtheta3, a2, b3, M2, psi, c3, zweif, gamma);
+
+    %calculate blade aspect ratio and pressure ratio for nozzle
+    h1 = rtn - rhn;
+    [bladeARn, Po2, Nn, zetan] = nozzle_blade_aspect_ratio(rm, Reon, mu, R, Cp, To1, Po1, gamma, M2, sigman, sigmanz, a1, a2, ctheta2, cz, h1);
+
+    %calculate blade aspect ratio and pressure ratio for rotor
+    To2 = To1;
+    [rtr, rhr] = rotorRadii(cz, rm, mdot, To2, Po2, M2, gamma, R);
+
+    h2 = rtr - rhr;
+    [bladeARr, Prtot, To2, To3, rho3, Nr, M2rel, zetar] = rotor_blade_aspect_ratio(U, sigmar, sigmarz, rm, Reor, mu, R, Cp, To1, Po1, Po2, gamma, M2, c2, w2, w3, h2, c3, psi, b2, b3);
+
+    num = psi*(gamma-1)*((U^2)/(gamma*R*To1));
+    den = Prtot^((1-gamma)/gamma) - 1;
+    etaST = -num/den; %negative so fmincon will maximize
+end
+
+%nonlinear constraint function
+function [c, ceq] = constraints(x, R, To1, Po1, M2, cz, a1, Cp, gamma, Umax, N, mdot, zweif, mu, etaTR, Wout)
+    %unpack design variables
+    [a3, Reon, Reor] = unpack(x);
 
     %perform velocity triangle analysis with chosen parameters
-    [c1, ctheta1, c2, ctheta2, a2, w2, wtheta2, b2, w3, wtheta3, b3, c3, ctheta3, M1] = velocityTriangleAnalysis(U, R, cz, a1, a3, To1, M2, Cp, gamma);
+    [c1, ctheta1, c2, ctheta2, a2, w2, wtheta2, b2, w3, wtheta3, b3, c3, ctheta3, M1] = velocityTriangleAnalysis(Wout, N, R, cz, a1, a3, Po1, To1, M2, Cp, gamma, mdot, etaTR);
+
+    %calculate nozzle radii and pitchline U
+    [rtn, rhn, rm, U, rho1] = nozzleRadiiAndU(Wout, N, gamma, R, Po1, cz, a1, To1, Cp, mdot, ctheta2, ctheta3, etaTR);
 
     %calculate psi, phi, Rdeg
     [psi, phi, Rdeg] = psiPhiR(cz, U, ctheta3, ctheta2, b2, b3);
@@ -61,38 +96,15 @@ function etaST = optimizeStage(x, R, To1, Po1, M2, cz, a1, Cp, gamma, Umax, N, m
 
     %calculate blade aspect ratio and pressure ratio for nozzle
     h1 = rtn - rhn;
-    [bladeARn, Po2] = nozzle_blade_aspect_ratio(rm, Reon, mu, R, Cp, To1, Po1, gamma, M2, sigman, sigmanz, a1, a2, ctheta2, cz, h1);
+    [bladeARn, Po2, Nn, zetan] = nozzle_blade_aspect_ratio(rm, Reon, mu, R, Cp, To1, Po1, gamma, M2, sigman, sigmanz, a1, a2, ctheta2, cz, h1);
 
-    %calculate blade aspect ratio and pressure ratio for rotor
+    %calculate rotor radii
     To2 = To1;
     [rtr, rhr] = rotorRadii(cz, rm, mdot, To2, Po2, M2, gamma, R);
 
-    h2 = rtr - rhr;
-    [bladeARr, Prtot, To2] = rotor_blade_aspect_ratio(U, sigmar, sigmarz, rm, Reor, mu, R, Cp, To1, Po1, Po2, gamma, M2, c2, w2, w3, h2, c3, psi, b2, b3);
-
-    num = psi*(gamma-1)*((U^2)/(gamma*R*To1));
-    den = Prtot^((1-gamma)/gamma) - 1;
-    etaST = -num/den; %negative so fmincon will maximize
-    calculateWorkDone(etaTR, mdot, U, ctheta3, ctheta2)
-end
-
-%nonlinear constraint function
-function [c, ceq] = constraints(x, cz, a1, To1, M2, Cp, gamma, mdot, Umax, N, R, Po1, etaTR, Wout, Wproportion)
-    %unpack design variables
-    [a3, Reon, Reor] = unpack(x);
-
-    %calculate nozzle radii and U
-    [rtn, rhn, rm, U] = nozzleRadiiAndU(Umax, N, gamma, R, Po1, cz, a1, To1, Cp, mdot);
-
-    %perform velocity triangle analysis with chosen parameters
-    [c1, ctheta1, c2, ctheta2, a2, w2, wtheta2, b2, w3, wtheta3, b3, c3, ctheta3, M1] = velocityTriangleAnalysis(U, R, cz, a1, a3, To1, M2, Cp, gamma);
-
-    %calculate psi, phi, Rdeg
-    [psi, phi, Rdeg] = psiPhiR(cz, U, ctheta3, ctheta2, b2, b3);
-
-    %constrain work output
-    ceq(1) = (Wout * Wproportion) - calculateWorkDone(etaTR, mdot, U, ctheta3, ctheta2);
-    c = [];
+    %constrain blade tip speed
+    c(1) = ((rtr * pi * N)/30) - Umax;
+    ceq = [];
 end
 
 %work calculation function
@@ -128,20 +140,20 @@ function [sigmanz, sigmarz, sigman, sigmar] = sigmaZweif(w3, To1, U, Cp, R, cz, 
 end
 
 %coefficient calculation function
-function [rtn, rhn, rm, U] = nozzleRadiiAndU(Umax, N, gamma, R, Po1, cz, a1, To1, Cp, mdot)
+function [rtn, rhn, rm, U, rho1] = nozzleRadiiAndU(Wout, N, gamma, R, Po1, cz, a1, To1, Cp, mdot, ctheta2, ctheta3, etaTR)
     %calculate M1
     c1 = cz/cosd(a1);
     T1 = To1 - (c1^2)/(2*Cp);
     M1 = c1/sqrt(gamma*R*T1);
-    
-    %assuming we operate at the limit of max tip speed - REVISIT
-    rtn = (30 * Umax)/(N * pi()); % tip radius
+
+    %calculate necessary rm using wdot requirement
+    rm = (30*Wout/(pi*etaTR*mdot*N*(ctheta2-ctheta3)));
     P1 = Po1 * (1 + ((gamma-1)/2)*(M1^2))^(-gamma/(gamma-1));
     T1 = To1 * (1 + ((gamma-1)/2)*(M1^2))^(-1);
     rho1 = P1/(R*T1);
-    rhn = sqrt(rtn^2 - (mdot/(rho1*cz*pi()))); % hub radius
-    rm = sqrt((rtn^2 + rhn^2)/2); % pitchline radius
-    U = (rm*N*pi()/30); % blade velocity at mean radius
+    rhn = sqrt(rm^2 - (mdot/(2*rho1*cz*pi))); % hub radius
+    rtn = sqrt(2*rm^2 - rhn^2); % tip radius
+    U = (rm*N*pi/30); % blade velocity at mean radius    
 end
 
 function [psi, phi, Rdeg] = psiPhiR(cz, U, ctheta3, ctheta2, b2, b3)
@@ -158,12 +170,12 @@ function [rtr, rhr] = rotorRadii(cz, rm, mdot, To2, Po2, M2, gamma, R)
     rho2 = P2/(R*T2);
 
     %apply continuity and assume constant pitchline radius to obtain radii
-    rtr = sqrt((mdot/(2*rho2*cz*pi())) + rm^2);
+    rtr = sqrt((mdot/(2*rho2*cz*pi)) + rm^2);
     rhr = sqrt(2*(rm^2) - rtr^2);
 end
 
 %velocity triangle analysis function
-function [c1, ctheta1, c2, ctheta2, a2, w2, wtheta2, b2, w3, wtheta3, b3, c3, ctheta3, M1] = velocityTriangleAnalysis(U, R, cz, a1, a3, To1, M2, Cp, gamma)
+function [c1, ctheta1, c2, ctheta2, a2, w2, wtheta2, b2, w3, wtheta3, b3, c3, ctheta3, M1] = velocityTriangleAnalysis(Wout, N, R, cz, a1, a3, Po1, To1, M2, Cp, gamma, mdot, etaTR)
     %nozzle inlet
     c1 = cz/cosd(a1);
     ctheta1 = cz*tand(a1);
@@ -177,20 +189,26 @@ function [c1, ctheta1, c2, ctheta2, a2, w2, wtheta2, b2, w3, wtheta3, b3, c3, ct
     a2 = acosd(cz/c2);
     ctheta2 = cz*tand(a2);
 
+    %rotor outlet - stationary frame
+    ctheta3 = cz*tand(a3);
+    c3 = cz/cosd(a3);
+
+    %determine U from work requirement
+    [rtn, rhn, rm, U, rho1] = nozzleRadiiAndU(Wout, N, gamma, R, Po1, cz, a1, To1, Cp, mdot, ctheta2, ctheta3, etaTR);
+
+    %rotor outlet - rotating frame
+    wtheta3 = ctheta3 - U;
+    w3 = sqrt(wtheta3^2 + cz^2);
+    b3 = atand(wtheta3/cz);
+
     %rotor inlet
     wtheta2 = ctheta2 - U;
     w2 = sqrt(wtheta2^2 + cz^2);
     b2 = atand(wtheta2/cz);
 
-    %rotor outlet
-    ctheta3 = cz*tand(a3);
-    c3 = cz/cosd(a3);
-    wtheta3 = ctheta3 - U;
-    w3 = sqrt(wtheta3^2 + cz^2);
-    b3 = atand(wtheta3/cz);
 end
 
-function [bladeARr, Prtot, To2] = rotor_blade_aspect_ratio(U, sigmar, sigmarz, rm, Reor, mu, R, Cp, To1, Po1, Po2, gamma, M2, c2, w2, w3, h2, c3, psi, b2, b3)
+function [bladeARr, Prtot, To2, To3, rho3, Nr, M2rel, zetar] = rotor_blade_aspect_ratio(U, sigmar, sigmarz, rm, Reor, mu, R, Cp, To1, Po1, Po2, gamma, M2, c2, w2, w3, h2, c3, psi, b2, b3)
     iterations = 2000; % iterations for both loops
     Tref = 1600; %K
     To2 = To1;
@@ -216,8 +234,8 @@ function [bladeARr, Prtot, To2] = rotor_blade_aspect_ratio(U, sigmar, sigmarz, r
         
         or = Reor * nur / w3;
         sr = or / cosd(b3);
-        Nr = round(2*pi()*rm/sr); %num of blades for rotor
-        sr = (2*pi()*rm)/Nr;
+        Nr = getIntegerBladeCount(2*pi*rm/sr); %num of blades for rotor
+        sr = (2*pi*rm)/Nr;
         br = sigmar*sr;
         bladeARr = h2/br;
         
@@ -241,7 +259,7 @@ function [bladeARr, Prtot, To2] = rotor_blade_aspect_ratio(U, sigmar, sigmarz, r
     Prtot = Po1/Po3;
 end
  
-function [bladeARn, Po2] = nozzle_blade_aspect_ratio(rm, Reon, mu, R, Cp, To1, Po1, gamma, M2, sigman, sigmanz, a1, a2, ctheta2, cz, h1)
+function [bladeARn, Po2, Nn, zetan] = nozzle_blade_aspect_ratio(rm, Reon, mu, R, Cp, To1, Po1, gamma, M2, sigman, sigmanz, a1, a2, ctheta2, cz, h1)
     iterations = 2000; % iterations for both loops
     Tref = 1600; %K
     %blade aspect ratio - nozzle
@@ -257,8 +275,8 @@ function [bladeARn, Po2] = nozzle_blade_aspect_ratio(rm, Reon, mu, R, Cp, To1, P
         c2 = sqrt(ctheta2^2 + cz^2);
         on = Reon * nun / c2;
         sn = on / cosd(a2);
-        Nn = ceil(2*pi()*rm/sn); %num of blades for nozzle
-        sn = (2*pi()*rm)/Nn;
+        Nn = getIntegerBladeCount(2*pi*rm/sn); %num of blades for nozzle
+        sn = (2*pi*rm)/Nn;
         bn = sigman*sn;
         bladeARn = h1/bn;
         
@@ -278,13 +296,82 @@ function [bladeARn, Po2] = nozzle_blade_aspect_ratio(rm, Reon, mu, R, Cp, To1, P
     end
 end
  
+%blade count rounding function
+function Nrounded = getIntegerBladeCount(Nunrounded)
+    Nrounded = floor(Nunrounded);
+    if (mod(Nrounded,2) == 0)
+        Nrounded = Nrounded + 1;
+    end
+end
 
+%post-processing and output function
+function postProcess(x, R, To1, Po1, M2, cz, a1, Cp, gamma, Umax, N, mdot, zweif, mu, etaTR, Wout)
+    %unpack design variables
+    [a3, Reon, Reor] = unpack(x);
 
+    %perform velocity triangle analysis with chosen parameters
+    [c1, ctheta1, c2, ctheta2, a2, w2, wtheta2, b2, w3, wtheta3, b3, c3, ctheta3, M1] = velocityTriangleAnalysis(Wout, N, R, cz, a1, a3, Po1, To1, M2, Cp, gamma, mdot, etaTR);
 
+    %calculate nozzle radii and pitchline U
+    [rtn, rhn, rm, U, rho1] = nozzleRadiiAndU(Wout, N, gamma, R, Po1, cz, a1, To1, Cp, mdot, ctheta2, ctheta3, etaTR);
+    
+    %calculate psi, phi, Rdeg
+    [psi, phi, Rdeg] = psiPhiR(cz, U, ctheta3, ctheta2, b2, b3);
 
+    %calculate optimum solidities using zweifel criteria
+    [sigmanz, sigmarz, sigman, sigmar] = sigmaZweif(w3, To1, U, Cp, R, cz, ctheta1, ctheta2, wtheta2, wtheta3, a2, b3, M2, psi, c3, zweif, gamma);
 
+    %calculate blade aspect ratio and pressure ratio for nozzle
+    h1 = rtn - rhn;
+    [bladeARn, Po2, Nn, zetan] = nozzle_blade_aspect_ratio(rm, Reon, mu, R, Cp, To1, Po1, gamma, M2, sigman, sigmanz, a1, a2, ctheta2, cz, h1);
 
+    %calculate blade aspect ratio and pressure ratio for rotor
+    To2 = To1;
+    [rtr, rhr] = rotorRadii(cz, rm, mdot, To2, Po2, M2, gamma, R);
 
+    h2 = rtr - rhr;
+    [bladeARr, Prtot, To2, To3, rho3, Nr, M2rel, zetar] = rotor_blade_aspect_ratio(U, sigmar, sigmarz, rm, Reor, mu, R, Cp, To1, Po1, Po2, gamma, M2, c2, w2, w3, h2, c3, psi, b2, b3);
 
+    num = psi*(gamma-1)*((U^2)/(gamma*R*To1));
+    den = Prtot^((1-gamma)/gamma) - 1;
+    etaST = num/den;
 
+    %perform final calculations needed and prepare data for output
 
+    %for general outputs
+    Po3 = Po1/Prtot;
+    num = log(To1/To3);
+    den = log(1 + (1/etaST)*(To1/To3 - 1));
+    etaPoly = num/den;
+    rho3_rho1 = rho3/rho1;
+
+    row1 = {'', '°R', 'U (m/s)', 'rm (m)', 'phi', 'psi', 'To3 (K)', 'Po3 (kPa)', 'etaST (%)', 'etaPoly (%)', 'rho3/rho1', '', ''};
+    row2 = {'', Rdeg, U, rm, phi, psi, To3, (Po3/1000), (etaST*100), (etaPoly*100), rho3_rho1, '', ''};
+
+    %for nozzle outputs
+    chi2 = a2 + 0; %assuming no deviation since M2=1
+    Po2_Po1 = Po2/Po1;
+    
+    row3 = {'', 'chi2 (deg)', 'a2 (deg)', 'sigmaN', 'Nn', 'Reon', 'rhn', 'rtn', 'bladeARn', 'zetan', 'Po2/Po1', 'M1', ''};
+    row4 = {'', chi2, a2, sigman, Nn, Reon, rhn, rtn, bladeARn, zetan, Po2_Po1, M1, ''};
+
+    %for rotor outputs
+    chi3 = b3 - cartersDeviation((b3-b2), sigmar); %CHECK
+    Po3_Po2 = (1/Prtot) * (1/Po2_Po1);
+    AN2 = pi*(rtr^2 - rhr^2) * (N^2);
+
+    row5 = {'b3 (deg)', 'chi3 (deg)', 'a3 (deg)', 'sigmaR', 'Nr', 'Reor', 'rhr', 'rtr', 'bladeARr', 'zetar', 'Po3/Po2', 'M2rel', 'AN^2 (m^2 RPM^2)'};
+    row6 = {b3, chi3, a3, sigmar, Nr, Reor, rhr, rtr, bladeARr, zetar, Po3_Po2, M2rel, AN2};
+
+    %concatenate output matrix
+    output = [row1; row2; row3; row4; row5; row6];
+    
+    %write file
+    filename = 'turbineData.xlsx';
+    writecell(output, filename);
+end
+
+function d = cartersDeviation(flowAngleDelta, sigma)
+    m = 1/8;
+    d = m*(abs(flowAngleDelta)/sigma);
+end
